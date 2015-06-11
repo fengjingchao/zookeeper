@@ -1,8 +1,20 @@
 Trunk
 
 NEW FEATURES:
+  ZOOKEEPER-2069 Netty Support for ClientCnxnSocket (Hongchao via fpj)
+
+  ZOOKEEPER-2119 Netty client docs (Hongchao via rakeshr)
+
+  ZOOKEEPER-2125 SSL on Netty client-server communication (Hongchao, Ian Dimayuga via rakeshr)
+
+  ZOOKEEPER-2123 Provide implementation of X509 AuthenticationProvider
+  (Ian Dimayuga via rakeshr)
+
+  ZOOKEEPER-2163: Introduce new ZNode type: container (Jordan Zimmerman via rgs)
 
 BUGFIXES:
+  ZOOKEEPER-1784 wrong check for COMMITANDACTIVATE in observer code, Learner.java (rgs via shralex).
+
   ZOOKEEPER-2047 testTruncationNullLog fails on windows (flavio via rakeshr)
 
   ZOOKEEPER-2026 Startup order in ServerCnxnFactory-ies is wrong (Stevo Slavic via rakeshr)
@@ -18,6 +30,103 @@ BUGFIXES:
   ZOOKEEPER-2064 Prevent resource leak in various classes (Ted Yu via fpj)
   
   ZOOKEEPER-2060 Trace bug in NettyServerCnxnFactory (Ian via fpj)
+
+  ZOOKEEPER-2072 Netty Server Should Configure Child Channel Pipeline By Specifying 
+  ChannelPipelineFactory (Hongchao via rakeshr)
+
+  ZOOKEEPER-2111 Not isAlive states should be synchronized in ClientCnxn 
+  (Hongchao via rakeshr)
+
+  ZOOKEEPER-1366 Zookeeper should be tolerant of clock adjustments (Hongchao
+  Deng via michim)
+
+  ZOOKEEPER-1949 recipes jar not included in the distribution package (Rakesh R
+  via michim)
+
+  ZOOKEEPER-2114 jute generated allocate_* functions are not externally visible
+  (Tim Crowder via michim)
+
+  ZOOKEEPER-2073 Memory leak on zookeeper_close (Dave Gosselin via michim)
+
+  ZOOKEEPER-1952 Default log directory and file name can be changed 
+  (nijel, Hari Krishna Dara via rakeshr)
+
+  ZOOKEEPER-2134 AsyncHammerTest.testHammer fails intermittently
+  (Michi Mutsuzaki via rakeshr)
+
+  ZOOKEEPER-2137 Make testPortChange() less flaky (Hongchao Deng via michim)
+
+  ZOOKEEPER-1893. automake: use serial-tests option (michim via camille)
+
+  ZOOKEEPER-1865 Fix retry logic in Learner.connectToLeader() (Edward Carter
+  via michim)
+
+  ZOOKEEPER-2109 Typo in src/c/src/load_gen.c (surendra singh lilhore via rakeshr)
+
+  ZOOKEEPER-2146 BinaryInputArchive readString should check length before
+  allocating memory (Hongchao Deng via michim)
+
+  ZOOKEEPER-2056 Zookeeper 3.4.x and 3.5.0-alpha is not OSGi compliant
+  (Deiwin Sarjas via rgs)
+
+  ZOOKEEPER-2157 Upgrade option should be removed from zkServer.sh usage
+  (J.Andreina via hdeng)
+
+  ZOOKEEPER-1506 Re-try DNS hostname -> IP resolution if node connection fails
+  (Michi Mutsuzaki via rakeshr)
+
+  ZOOKEEPER-2029 Leader.LearnerCnxAcceptor should handle exceptions in run()
+  (Rakesh R, Asad Saeed via hdeng)
+
+  ZOOKEEPER-1626 Zookeeper C client should be tolerant of clock adjustments
+  (Colin Patrick McCabe via michim)
+  
+  ZOOKEEPER-2173. ZK startup failure should be handled with proper error message
+  (J.Andreina via camille)
+
+  ZOOKEEPER-2174 JUnit4ZKTestRunner logs test failure for all exceptions even
+  if the test method is annotated with an expected exception (Chris Nauroth
+  via rgs)
+
+  ZOOKEEPER-2124 Allow Zookeeper version string to have underscore '_'
+  (Chris Nauroth via rgs)
+
+  ZOOKEEPER-2062 RemoveWatchesTest takes forever to run (Chris Nauroth via rakeshr)
+
+  ZOOKEEPER-2182 Several test suites are not running during pre-commit, because their names do not end with "Test". (Chris Nauroth via hdeng)
+
+  ZOOKEEPER-2186 QuorumCnxManager#receiveConnection may crash with random input
+  (rgs via michim)
+
+  ZOOKEEPER-2190 In StandaloneDisabledTest, testReconfig() shouldn't take
+  leaving servers as joining servers (Hongchao Deng via rgs)
+
+  ZOOKEEPER-1077: C client lib doesn't build on Solaris (Chris Nauroth via rgs)
+
+  ZOOKEEPER-2156: If JAVA_HOME is not set zk startup and fetching status command execution
+  result misleads user (J.Andreina via rakeshr)
+
+  ZOOKEEPER-2179: Typo in Watcher.java (Archana T via rgs)
+
+  ZOOKEEPER-2178 Native client fails compilation on Windows. (Chris Nauroth via michim)
+
+  ZOOKEEPER-2197 non-ascii character in FinalRequestProcessor.java
+  (Michi Mutsuzaki via rgs)
+
+  ZOOKEEPER-2096: C client builds with incorrect error codes in VisualStudio 2010+
+  (Vitaly Stakhovsky via rgs)
+
+  ZOOKEEPER-2194: Let DataNode.getChildren() return an unmodifiable view of its children set
+  (Hitoshi Mitake via rgs)
+
+  ZOOKEEPER-2204: LearnerSnapshotThrottlerTest.testHighContentionWithTimeout fails occasionally
+  (Donny Nadolny via rgs)
+
+  ZOOKEEPER-2201: Network issues can cause cluster to hang due to near-deadlock
+  (Donny Nadolny via rgs)
+
+  ZOOKEEPER-2213: Empty path in Set crashes server and prevents restart
+  (Hongchao Deng via rgs)
 
 IMPROVEMENTS:
   ZOOKEEPER-1660 Documentation for Dynamic Reconfiguration (Reed Wanderman-Milne via shralex)  
@@ -40,6 +149,55 @@ IMPROVEMENTS:
 
   ZOOKEEPER-2079 Stop daemon with "kill" rather than "kill -9" (Guillaume ALAUX
   via michim)
+
+  ZOOKEEPER-1963 Make JDK 7 the minimum requirement for Zookeeper 
+  (Hongchao via fpj)
+
+  ZOOKEEPER-2110 Typo fixes in the ZK documentation. (Jeffrey Schroeder via rakeshr)
+
+  ZOOKEEPER-1907 Improve Thread handling (Rakesh R via michim)
+
+  ZOOKEEPER-2107 zookeeper client should support custom HostProviders 
+  (Robert Kamphuis via rakeshr)
+
+  ZOOKEEPER-2149 Logging of client address when socket connection established
+  (Hongchao Deng via michim)
+
+  ZOOKEEPER-2176 Unclear error message should be info not error
+  (rgs via hdeng)
+
+  ZOOKEEPER-2153 X509 Authentication Documentation
+  (Ian Dimayuga via hdeng)
+
+  ZOOKEEPER-2171 avoid reverse lookups in QuorumCnxManager (rgs via michim)
+
+  ZOOKEEPER-2183 Concurrent Testing Processes and Port Assignments (Chris Nauroth via hdeng)
+
+  ZOOKEEPER-2126 Improve exit log messsage of EventThread and SendThread by
+  adding SessionId (surendra singh lilhore via rakeshr)
+
+  ZOOKEEPER-2191: Continue supporting prior Ant versions that don't implement the
+  threads attribute for the JUnit task (Chris Nauroth via rakeshr)
+
+  ZOOKEEPER-2187: remove duplicated code between CreateRequest{,2}
+  (Raul Gutierrez Segales via hdeng)
+
+  ZOOKEEPER-2098: QuorumCnxManager: use BufferedOutputStream for initial msg
+  (Raul Gutierrez Segales via hdeng)
+
+  ZOOKEEPER-2198 Set default test.junit.threads to 1 (Chris Nauroth via michim)
+
+  ZOOKEEPER-2205: Log type of unexpected quorum packet in learner handler loop
+  (Hitoshi Mitake via rgs)
+
+  ZOOKEEPER-2206: Add missing packet types to LearnerHandler.packetToString()
+  (Hitoshi Mitake via rgs)
+
+  ZOOKEEPER-2207: Enhance error logs with LearnerHandler.packetToString()
+  (Hitoshi Mitake via rgs)
+
+  ZOOKEEPER-2208: Log type of unexpected quorum packet in observer loop
+  (Akihiro Suda via rgs)
 
 Release 3.5.0 - 8/4/2014
 

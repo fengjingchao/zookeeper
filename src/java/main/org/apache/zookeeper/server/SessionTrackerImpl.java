@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.KeeperException.SessionExpiredException;
+import org.apache.zookeeper.common.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -81,7 +82,7 @@ public class SessionTrackerImpl extends ZooKeeperCriticalThread implements
      */
     public static long initializeNextSession(long id) {
         long nextSid;
-        nextSid = (System.currentTimeMillis() << 24) >>> 8;
+        nextSid = (Time.currentElapsedTime() << 24) >>> 8;
         nextSid =  nextSid | (id <<56);
         return nextSid;
     }
@@ -90,9 +91,9 @@ public class SessionTrackerImpl extends ZooKeeperCriticalThread implements
 
     public SessionTrackerImpl(SessionExpirer expirer,
             ConcurrentMap<Long, Integer> sessionsWithTimeout, int tickTime,
-            long serverId)
+            long serverId, ZooKeeperServerListener listener)
     {
-        super("SessionTracker");
+        super("SessionTracker", listener);
         this.expirer = expirer;
         this.sessionExpiryQueue = new ExpiryQueue<SessionImpl>(tickTime);
         this.sessionsWithTimeout = sessionsWithTimeout;
@@ -152,7 +153,7 @@ public class SessionTrackerImpl extends ZooKeeperCriticalThread implements
                 }
             }
         } catch (InterruptedException e) {
-            LOG.error("Unexpected interruption", e);
+            handleException(this.getName(), e);
         }
         LOG.info("SessionTrackerImpl exited loop!");
     }

@@ -87,6 +87,7 @@ public class CommitProcessorTest {
         System.setProperty(
             CommitProcessor.ZOOKEEPER_COMMIT_PROC_NUM_WORKER_THREADS,
             Integer.toString(numCommitThreads));
+        System.setProperty("zookeeper.admin.enableServer", "false");
         tmpDir = ClientBase.createTmpDir();
         ClientBase.setupTestEnv();
         zks = new TestZooKeeperServer(tmpDir, tmpDir, 4000);
@@ -232,7 +233,8 @@ public class CommitProcessorTest {
             // processor, so it can do pre/post validating of requests
             ValidateProcessor validateProcessor =
                 new ValidateProcessor(finalProcessor);
-            commitProcessor = new CommitProcessor(validateProcessor, "1", true);
+            commitProcessor = new CommitProcessor(validateProcessor, "1", true,
+                    getZooKeeperServerListener());
             validateProcessor.setCommitProcessor(commitProcessor);
             commitProcessor.start();
             MockProposalRequestProcessor proposalProcessor =

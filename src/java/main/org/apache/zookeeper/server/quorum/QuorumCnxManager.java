@@ -18,6 +18,7 @@
 
 package org.apache.zookeeper.server.quorum;
 
+import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -82,7 +83,17 @@ public class QuorumCnxManager {
      */
     
     private long observerCounter = -1;
-    
+
+    /*
+     * Protocol identifier used among peers
+     */
+    public static final long PROTOCOL_VERSION = -65536L;
+
+    /*
+     * Max buffer size to be read from the network.
+     */
+    static public final int maxBuffer = 2048;
+
     /*
      * Connection time out value in milliseconds 
      */
@@ -136,6 +147,72 @@ public class QuorumCnxManager {
         long sid;
     }
 
+    /*
+     * This class parses the initial identification sent out by peers with their
+     * sid & hostname.
+     */
+    static public class InitialMessage {
+        public Long sid;
+        public InetSocketAddress electionAddr;
+
+        InitialMessage(Long sid, InetSocketAddress address) {
+            this.sid = sid;
+            this.electionAddr = address;
+        }
+
+        @SuppressWarnings("serial")
+        public static class InitialMessageException extends Exception {
+            InitialMessageException(String message, Object... args) {
+                super(String.format(message, args));
+            }
+        }
+
+        static public InitialMessage parse(Long protocolVersion, DataInputStream din)
+            throws InitialMessageException, IOException {
+            Long sid;
+
+            if (protocolVersion != PROTOCOL_VERSION) {
+                throw new InitialMessageException(
+                        "Got unrecognized protocol version %s", protocolVersion);
+            }
+
+            sid = din.readLong();
+
+            int remaining = din.readInt();
+            if (remaining <= 0 || remaining > maxBuffer) {
+                throw new InitialMessageException(
+                        "Unreasonable buffer length: %s", remaining);
+            }
+
+            byte[] b = new byte[remaining];
+            int num_read = din.read(b);
+
+            if (num_read != remaining) {
+                throw new InitialMessageException(
+                        "Read only %s bytes out of %s sent by server %s",
+                        num_read, remaining, sid);
+            }
+
+            // FIXME: IPv6 is not supported. Using something like Guava's HostAndPort
+            //        parser would be good.
+            String addr = new String(b);
+            String[] host_port = addr.split(":");
+
+            if (host_port.length != 2) {
+                throw new InitialMessageException("Badly formed address: %s", addr);
+            }
+
+            int port;
+            try {
+                port = Integer.parseInt(host_port[1]);
+            } catch (NumberFormatException e) {
+                throw new InitialMessageException("Bad port number: %s", host_port[1]);
+            }
+
+            return new InitialMessage(sid, new InetSocketAddress(host_port[0], port));
+        }
+    }
+
     public QuorumCnxManager(QuorumPeer self) {
         this.recvQueue = new ArrayBlockingQueue<Message>(RECV_CAPACITY);
         this.queueSendMap = new ConcurrentHashMap<Long, ArrayBlockingQueue<ByteBuffer>>();
@@ -174,14 +251,18 @@ public class QuorumCnxManager {
      * connection if it loses challenge. Otherwise, it keeps the connection.
      */
     public boolean initiateConnection(Socket sock, Long sid) {
-        DataOutputStream dout = null;
         try {
+            // Use BufferedOutputStream to reduce the number of IP packets. This is
+            // important for x-DC scenarios.
+            BufferedOutputStream buf = new BufferedOutputStream(sock.getOutputStream());
+            DataOutputStream dout = new DataOutputStream(buf);
+
             // Sending id and challenge
-            dout = new DataOutputStream(sock.getOutputStream());
+
             // represents protocol version (in other words - message type)
-            dout.writeLong(0xffff0000);              
+            dout.writeLong(PROTOCOL_VERSION);
             dout.writeLong(self.getId());
-            String addr = self.getElectionAddress().getHostName() + ":" + self.getElectionAddress().getPort();
+            String addr = self.getElectionAddress().getHostString() + ":" + self.getElectionAddress().getPort();
             byte[] addr_bytes = addr.getBytes();
             dout.writeInt(addr_bytes.length);
             dout.write(addr_bytes);
@@ -229,31 +310,28 @@ public class QuorumCnxManager {
      * possible long value to lose the challenge.
      * 
      */
-    public boolean receiveConnection(Socket sock) {
+    public void receiveConnection(Socket sock) {
         Long sid = null, protocolVersion = null;
         InetSocketAddress electionAddr = null;
+
         try {
             DataInputStream din = new DataInputStream(sock.getInputStream());
+
             protocolVersion = din.readLong();
             if (protocolVersion >= 0) { // this is a server id and not a protocol version
                 sid = protocolVersion;
             } else {
-                sid = din.readLong();
-                int num_remaining_bytes = din.readInt();
-                byte[] b = new byte[num_remaining_bytes];
-                int num_read = din.read(b);
-                if (num_read == num_remaining_bytes) {
-                    if (protocolVersion == 0xffff0000) {
-                        String addr = new String(b);
-                        String[] host_port = addr.split(":");
-                        electionAddr = new InetSocketAddress(host_port[0], Integer.parseInt(host_port[1]));                   
-                    } else {
-                        LOG.error("Got urecognized protocol version " + protocolVersion + " from " + sid);
-                    }
-                } else {
-                   LOG.error("Read only " + num_read + " bytes out of " + num_remaining_bytes + " sent by server " + sid);          
+                try {
+                    InitialMessage init = InitialMessage.parse(protocolVersion, din);
+                    sid = init.sid;
+                    electionAddr = init.electionAddr;
+                } catch (InitialMessage.InitialMessageException ex) {
+                    LOG.error(ex.toString());
+                    closeSocket(sock);
+                    return;
                 }
-            } 
+            }
+
             if (sid == QuorumPeer.OBSERVER_ID) {
                 /*
                  * Choose identifier at random. We need a value to identify
@@ -261,12 +339,12 @@ public class QuorumCnxManager {
                  */
                 
                 sid = observerCounter--;
-                LOG.info("Setting arbitrary identifier to observer: " + sid);
+                LOG.info("Setting arbitrary identifier to observer: {}", sid);
             }
         } catch (IOException e) {
             closeSocket(sock);
-            LOG.warn("Exception reading or writing challenge: " + e.toString());
-            return false;
+            LOG.warn("Exception reading or writing challenge: {}", e.toString());
+            return;
         }
         
         //If wins the challenge, then close the new connection.
@@ -284,7 +362,7 @@ public class QuorumCnxManager {
             /*
              * Now we start a new connection
              */
-            LOG.debug("Create new connection to server: " + sid);
+            LOG.debug("Create new connection to server: {}", sid);
             closeSocket(sock);
 
             if (electionAddr != null) {
@@ -293,28 +371,25 @@ public class QuorumCnxManager {
                 connectOne(sid);
             }
 
-            // Otherwise start worker threads to receive data.
-        } else {
+        } else { // Otherwise start worker threads to receive data.
             SendWorker sw = new SendWorker(sock, sid);
             RecvWorker rw = new RecvWorker(sock, sid, sw);
             sw.setRecv(rw);
 
             SendWorker vsw = senderWorkerMap.get(sid);
             
-            if(vsw != null)
+            if (vsw != null) {
                 vsw.finish();
-            
+            }
+
             senderWorkerMap.put(sid, sw);
-            
-            queueSendMap.putIfAbsent(sid, new ArrayBlockingQueue<ByteBuffer>(
-                        SEND_CAPACITY));
+
+            queueSendMap.putIfAbsent(sid,
+                    new ArrayBlockingQueue<ByteBuffer>(SEND_CAPACITY));
             
             sw.start();
             rw.start();
-            
-            return true;    
         }
-        return false;
     }
 
     /**
@@ -354,7 +429,7 @@ public class QuorumCnxManager {
      *  @param sid  server id
      *  @return boolean success indication
      */
-    synchronized boolean connectOne(long sid, InetSocketAddress electionAddr){
+    synchronized private boolean connectOne(long sid, InetSocketAddress electionAddr){
         if (senderWorkerMap.get(sid) != null) {
             LOG.debug("There is a connection already for server " + sid);
             return true;
@@ -402,6 +477,9 @@ public class QuorumCnxManager {
         }
         synchronized(self) {
            boolean knownId = false;
+            // Resolve hostname for the remote server before attempting to
+            // connect in case the underlying ip address has changed.
+            self.recreateSocketAddresses(sid);
             if (self.getView().containsKey(sid)) {
                knownId = true;
                 if (connectOne(sid, self.getView().get(sid).electionAddr))
@@ -545,6 +623,9 @@ public class QuorumCnxManager {
                         int port = self.getElectionAddress().getPort();
                         addr = new InetSocketAddress(port);
                     } else {
+                        // Resolve hostname for this server in case the
+                        // underlying ip address has changed.
+                        self.recreateSocketAddresses(self.getId());
                         addr = self.getElectionAddress();
                     }
                     LOG.info("My election bind port: " + addr.toString());

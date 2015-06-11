@@ -23,19 +23,39 @@ import static org.jboss.netty.buffer.ChannelBuffers.dynamicBuffer;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.security.KeyManagementException;
+import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executors;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLPeerUnverifiedException;
+import javax.net.ssl.SSLSession;
+import javax.net.ssl.X509KeyManager;
+import javax.net.ssl.X509TrustManager;
+
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.common.X509Exception;
+import org.apache.zookeeper.common.X509Exception.SSLContextException;
+import org.apache.zookeeper.common.X509Util;
+import org.apache.zookeeper.server.auth.ProviderRegistry;
+import org.apache.zookeeper.server.auth.X509AuthenticationProvider;
 import org.jboss.netty.bootstrap.ServerBootstrap;
 import org.jboss.netty.buffer.ChannelBuffer;
 import org.jboss.netty.buffer.ChannelBuffers;
 import org.jboss.netty.channel.Channel;
+import org.jboss.netty.channel.ChannelFuture;
+import org.jboss.netty.channel.ChannelFutureListener;
 import org.jboss.netty.channel.ChannelHandler.Sharable;
 import org.jboss.netty.channel.ChannelHandlerContext;
+import org.jboss.netty.channel.ChannelPipeline;
+import org.jboss.netty.channel.ChannelPipelineFactory;
 import org.jboss.netty.channel.ChannelStateEvent;
+import org.jboss.netty.channel.Channels;
 import org.jboss.netty.channel.ExceptionEvent;
 import org.jboss.netty.channel.MessageEvent;
 import org.jboss.netty.channel.SimpleChannelHandler;
@@ -43,6 +63,7 @@ import org.jboss.netty.channel.WriteCompletionEvent;
 import org.jboss.netty.channel.group.ChannelGroup;
 import org.jboss.netty.channel.group.DefaultChannelGroup;
 import org.jboss.netty.channel.socket.nio.NioServerSocketChannelFactory;
+import org.jboss.netty.handler.ssl.SslHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -56,7 +77,7 @@ public class NettyServerCnxnFactory extends ServerCnxnFactory {
         new HashMap<InetAddress, Set<NettyServerCnxn>>( );
     InetSocketAddress localAddress;
     int maxClientCnxns = 60;
-    
+
     /**
      * This is an inner class since we need to extend SimpleChannelHandler, but
      * NettyServerCnxnFactory already extends ServerCnxnFactory. By making it inner
@@ -82,11 +103,19 @@ public class NettyServerCnxnFactory extends ServerCnxnFactory {
             if (LOG.isTraceEnabled()) {
                 LOG.trace("Channel connected " + e);
             }
-            allChannels.add(ctx.getChannel());
+
             NettyServerCnxn cnxn = new NettyServerCnxn(ctx.getChannel(),
                     zkServer, NettyServerCnxnFactory.this);
             ctx.setAttachment(cnxn);
-            addCnxn(cnxn);
+
+            if (secure) {
+                SslHandler sslHandler = ctx.getPipeline().get(SslHandler.class);
+                ChannelFuture handshakeFuture = sslHandler.handshake();
+                handshakeFuture.addListener(new CertificateVerifier(sslHandler, cnxn));
+            } else {
+                allChannels.add(ctx.getChannel());
+                addCnxn(cnxn);
+            }
         }
 
         @Override
@@ -238,11 +267,63 @@ public class NettyServerCnxnFactory extends ServerCnxnFactory {
                 LOG.trace("write complete " + e);
             }
         }
-        
+
+        private final class CertificateVerifier
+                implements ChannelFutureListener {
+            private final SslHandler sslHandler;
+            private final NettyServerCnxn cnxn;
+
+            CertificateVerifier(SslHandler sslHandler, NettyServerCnxn cnxn) {
+                this.sslHandler = sslHandler;
+                this.cnxn = cnxn;
+            }
+
+            /**
+             * Only allow the connection to stay open if certificate passes auth
+             */
+            public void operationComplete(ChannelFuture future)
+                    throws SSLPeerUnverifiedException {
+                if (future.isSuccess()) {
+                    LOG.debug("Successful handshake with session 0x{}",
+                            Long.toHexString(cnxn.sessionId));
+                    SSLEngine eng = sslHandler.getEngine();
+                    SSLSession session = eng.getSession();
+                    cnxn.setClientCertificateChain(session.getPeerCertificates());
+
+                    String authProviderProp
+                            = System.getProperty(X509Util.SSL_AUTHPROVIDER, "x509");
+
+                    X509AuthenticationProvider authProvider =
+                            (X509AuthenticationProvider)
+                                    ProviderRegistry.getProvider(authProviderProp);
+
+                    if (authProvider == null) {
+                        LOG.error("Auth provider not found: {}", authProviderProp);
+                        cnxn.close();
+                        return;
+                    }
+
+                    if (KeeperException.Code.OK !=
+                            authProvider.handleAuthentication(cnxn, null)) {
+                        LOG.error("Authentication failed for session 0x{}",
+                                Long.toHexString(cnxn.sessionId));
+                        cnxn.close();
+                        return;
+                    }
+
+                    allChannels.add(future.getChannel());
+                    addCnxn(cnxn);
+                } else {
+                    LOG.error("Unsuccessful handshake with session 0x{}",
+                            Long.toHexString(cnxn.sessionId));
+                    cnxn.close();
+                }
+            }
+        }
     }
     
     CnxnChannelHandler channelHandler = new CnxnChannelHandler();
-    
+
     NettyServerCnxnFactory() {
         bootstrap = new ServerBootstrap(
                 new NioServerSocketChannelFactory(
@@ -254,10 +335,54 @@ public class NettyServerCnxnFactory extends ServerCnxnFactory {
         bootstrap.setOption("child.tcpNoDelay", true);
         /* set socket linger to off, so that socket close does not block */
         bootstrap.setOption("child.soLinger", -1);
+        bootstrap.setPipelineFactory(new ChannelPipelineFactory() {
+            @Override
+            public ChannelPipeline getPipeline() throws Exception {
+                ChannelPipeline p = Channels.pipeline();
+                if (secure) {
+                    initSSL(p);
+                }
+                p.addLast("servercnxnfactory", channelHandler);
 
-        bootstrap.getPipeline().addLast("servercnxnfactory", channelHandler);
+                return p;
+            }
+        });
     }
-    
+
+    private synchronized void initSSL(ChannelPipeline p)
+            throws X509Exception, KeyManagementException, NoSuchAlgorithmException {
+        String authProviderProp = System.getProperty(X509Util.SSL_AUTHPROVIDER);
+        SSLContext sslContext;
+        if (authProviderProp == null) {
+            sslContext = X509Util.createSSLContext();
+        } else {
+            sslContext = SSLContext.getInstance("TLSv1");
+            X509AuthenticationProvider authProvider =
+                    (X509AuthenticationProvider)ProviderRegistry.getProvider(
+                            System.getProperty(X509Util.SSL_AUTHPROVIDER,
+                                    "x509"));
+
+            if (authProvider == null)
+            {
+                LOG.error("Auth provider not found: {}", authProviderProp);
+                throw new SSLContextException(
+                        "Could not create SSLContext with specified auth provider: " +
+                        authProviderProp);
+            }
+
+            sslContext.init(new X509KeyManager[] { authProvider.getKeyManager() },
+                            new X509TrustManager[] { authProvider.getTrustManager() },
+                            null);
+        }
+
+        SSLEngine sslEngine = sslContext.createSSLEngine();
+        sslEngine.setUseClientMode(false);
+        sslEngine.setNeedClientAuth(true);
+
+        p.addLast("ssl", new SslHandler(sslEngine));
+        LOG.info("SSL handler added for channel: {}", p.getChannel());
+    }
+
     @Override
     public void closeAll() {
         if (LOG.isDebugEnabled()) {
@@ -281,7 +406,7 @@ public class NettyServerCnxnFactory extends ServerCnxnFactory {
     }
 
     @Override
-    public void closeSession(long sessionId) {
+    public boolean closeSession(long sessionId) {
         if (LOG.isDebugEnabled()) {
             LOG.debug("closeSession sessionid:0x" + sessionId);
         }
@@ -292,18 +417,20 @@ public class NettyServerCnxnFactory extends ServerCnxnFactory {
                 } catch (Exception e) {
                     LOG.warn("exception during session close", e);
                 }
-                break;
+                return true;
             }
         }
+        return false;
     }
 
     @Override
-    public void configure(InetSocketAddress addr, int maxClientCnxns)
+    public void configure(InetSocketAddress addr, int maxClientCnxns, boolean secure)
             throws IOException
     {
         configureSaslLogin();
         localAddress = addr;
         this.maxClientCnxns = maxClientCnxns;
+        this.secure = secure;
     }
 
     /** {@inheritDoc} */
@@ -370,12 +497,14 @@ public class NettyServerCnxnFactory extends ServerCnxnFactory {
     }
     
     @Override
-    public void startup(ZooKeeperServer zks) throws IOException,
-            InterruptedException {
+    public void startup(ZooKeeperServer zks, boolean startServer)
+            throws IOException, InterruptedException {
         start();
         setZooKeeperServer(zks);
-        zks.startdata();
-        zks.startup();
+        if (startServer) {
+            zks.startdata();
+            zks.startup();
+        }
     }
 
     @Override

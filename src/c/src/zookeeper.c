@@ -49,7 +49,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <unistd.h>
+#include <unistd.h> // needed for _POSIX_MONOTONIC_CLOCK
 #include "config.h"
 #else
 #include "winstdint.h"
@@ -234,22 +234,76 @@ typedef int sendsize_t;
 #define SEND_FLAGS  0
 #else
 #ifdef __APPLE__
-#define MSG_NOSIGNAL SO_NOSIGPIPE
+#define SEND_FLAGS SO_NOSIGPIPE
+#endif
+#ifdef __linux__
+#define SEND_FLAGS MSG_NOSIGNAL
+#endif
+#ifndef SEND_FLAGS
+#define SEND_FLAGS 0
 #endif
 typedef int socket_t;
 typedef ssize_t sendsize_t;
-#define SEND_FLAGS  MSG_NOSIGNAL
 #endif
 
 static void zookeeper_set_sock_nodelay(zhandle_t *, socket_t);
 static void zookeeper_set_sock_noblock(zhandle_t *, socket_t);
 static void zookeeper_set_sock_timeout(zhandle_t *, socket_t, int);
-static int zookeeper_connect(zhandle_t *, struct sockaddr_storage *, socket_t);
+static socket_t zookeeper_connect(zhandle_t *, struct sockaddr_storage *, socket_t);
 
 
 static sendsize_t zookeeper_send(socket_t s, const void* buf, size_t len)
 {
     return send(s, buf, len, SEND_FLAGS);
+}
+
+/**
+ * Get the system time.
+ *
+ * If the monotonic clock is available, we use that.  The monotonic clock does
+ * not change when the wall-clock time is adjusted by NTP or the system
+ * administrator.  The monotonic clock returns a value which is monotonically
+ * increasing.
+ *
+ * If POSIX monotonic clocks are not available, we fall back on the wall-clock.
+ *
+ * @param tv         (out param) The time.
+ */
+void get_system_time(struct timeval *tv)
+{
+  int ret;
+
+#ifdef CLOCK_MONOTONIC_RAW
+  // On Linux, CLOCK_MONOTONIC is affected by ntp slew but CLOCK_MONOTONIC_RAW
+  // is not.  We want the non-slewed (constant rate) CLOCK_MONOTONIC_RAW if it
+  // is available.
+  struct timespec ts = { 0 };
+  ret = clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+  tv->tv_sec = ts.tv_sec;
+  tv->tv_usec = ts.tv_nsec / 1000;
+#elif _POSIX_MONOTONIC_CLOCK
+  struct timespec ts = { 0 };
+  ret = clock_gettime(CLOCK_MONOTONIC, &ts);
+  tv->tv_sec = ts.tv_sec;
+  tv->tv_usec = ts.tv_nsec / 1000;
+#elif _WIN32
+  LARGE_INTEGER counts, countsPerSecond, countsPerMicrosecond;
+  if (QueryPerformanceFrequency(&countsPerSecond) &&
+      QueryPerformanceCounter(&counts)) {
+    countsPerMicrosecond.QuadPart = countsPerSecond.QuadPart / 1000000;
+    tv->tv_sec = (long)(counts.QuadPart / countsPerSecond.QuadPart);
+    tv->tv_usec = (long)((counts.QuadPart % countsPerSecond.QuadPart) /
+        countsPerMicrosecond.QuadPart);
+    ret = 0;
+  } else {
+    ret = gettimeofday(tv, NULL);
+  }
+#else
+  ret = gettimeofday(tv, NULL);
+#endif
+  if (ret) {
+    abort();
+  }
 }
 
 const void *zoo_get_context(zhandle_t *zh)
@@ -1931,7 +1985,7 @@ static struct timeval get_timeval(int interval)
 
     rc = serialize_RequestHeader(oa, "header", &h);
     enter_critical(zh);
-    gettimeofday(&zh->last_ping, 0);
+    get_system_time(&zh->last_ping);
     rc = rc < 0 ? rc : add_void_completion(zh, h.xid, 0, 0);
     rc = rc < 0 ? rc : queue_buffer_bytes(&zh->to_send, get_buffer(oa),
             get_buffer_len(oa));
@@ -2055,6 +2109,16 @@ static socket_t zookeeper_connect(zhandle_t *zh,
 
 #ifdef _WIN32
     get_errno();
+#if _MSC_VER >= 1600
+    switch(errno) {
+    case WSAEWOULDBLOCK:
+        errno = EWOULDBLOCK;
+        break;
+    case WSAEINPROGRESS:
+        errno = EINPROGRESS;
+        break;
+    }
+#endif
 #endif
 
     return rc;
@@ -2069,7 +2133,7 @@ int zookeeper_interest(zhandle_t *zh, socket_t *fd, int *interest,
         return ZBADARGUMENTS;
     if (is_unrecoverable(zh))
         return ZINVALIDSTATE;
-    gettimeofday(&now, 0);
+    get_system_time(&now);
     if(zh->next_deadline.tv_sec!=0 || zh->next_deadline.tv_usec!=0){
         int time_left = calculate_interval(&zh->next_deadline, &now);
         int max_exceed = zh->recv_timeout / 10 > 200 ? 200 :
@@ -2279,7 +2343,7 @@ static int check_events(zhandle_t *zh, int events)
                 "failed while receiving a server response");
         }
         if (rc > 0) {
-            gettimeofday(&zh->last_recv, 0);
+            get_system_time(&zh->last_recv);
             if (zh->input_buffer != &zh->primer_buffer) {
                 queue_buffer(&zh->to_process, zh->input_buffer, 0);
             } else  {
@@ -2733,7 +2797,7 @@ static void isSocketReadable(zhandle_t* zh)
     }
 #endif
     else{
-        gettimeofday(&zh->socket_readable,0);
+        get_system_time(&zh->socket_readable);
     }
 }
 
@@ -2745,7 +2809,7 @@ static void checkResponseLatency(zhandle_t* zh)
     if(zh->socket_readable.tv_sec==0)
         return;
 
-    gettimeofday(&now,0);
+    get_system_time(&now);
     delay=calculate_interval(&zh->socket_readable, &now);
     if(delay>20)
         LOG_DEBUG(LOGCALLBACK(zh), "The following server response has spent at least %dms sitting in the client socket recv buffer",delay);
@@ -2821,6 +2885,7 @@ int zookeeper_process(zhandle_t *zh, int events)
             if (zh->close_requested == 1 && cptr == NULL) {
                 LOG_DEBUG(LOGCALLBACK(zh), "Completion queue has been cleared by zookeeper_close()");
                 close_buffer_iarchive(&ia);
+                free_buffer(bptr);
                 return api_epilog(zh,ZINVALIDSTATE);
             }
             assert(cptr);
@@ -2850,7 +2915,7 @@ int zookeeper_process(zhandle_t *zh, int events)
                 if(hdr.xid == PING_XID){
                     int elapsed = 0;
                     struct timeval now;
-                    gettimeofday(&now, 0);
+                    get_system_time(&now);
                     elapsed = calculate_interval(&zh->last_ping, &now);
                     LOG_DEBUG(LOGCALLBACK(zh), "Got ping response in %d ms", elapsed);
 
@@ -3471,30 +3536,6 @@ static int CreateRequest_init(zhandle_t *zh, struct CreateRequest *req,
     return ZOK;
 }
 
-static int Create2Request_init(zhandle_t *zh, struct Create2Request *req,
-        const char *path, const char *value,
-        int valuelen, const struct ACL_vector *acl_entries, int flags)
-{
-    int rc;
-    assert(req);
-    rc = Request_path_init(zh, flags, &req->path, path);
-    assert(req);
-    if (rc != ZOK) {
-        return rc;
-    }
-    req->flags = flags;
-    req->data.buff = (char*)value;
-    req->data.len = valuelen;
-    if (acl_entries == 0) {
-        req->acl.count = 0;
-        req->acl.data = 0;
-    } else {
-        req->acl = *acl_entries;
-    }
-
-    return ZOK;
-}
-
 int zoo_acreate(zhandle_t *zh, const char *path, const char *value,
         int valuelen, const struct ACL_vector *acl_entries, int flags,
         string_completion_t completion, const void *data)
@@ -3533,15 +3574,15 @@ int zoo_acreate2(zhandle_t *zh, const char *path, const char *value,
 {
     struct oarchive *oa;
     struct RequestHeader h = { get_xid(), ZOO_CREATE2_OP };
-    struct Create2Request req;
+    struct CreateRequest req;
 
-    int rc = Create2Request_init(zh, &req, path, value, valuelen, acl_entries, flags);
+    int rc = CreateRequest_init(zh, &req, path, value, valuelen, acl_entries, flags);
     if (rc != ZOK) {
         return rc;
     }
     oa = create_buffer_oarchive();
     rc = serialize_RequestHeader(oa, "header", &h);
-    rc = rc < 0 ? rc : serialize_Create2Request(oa, "req", &req);
+    rc = rc < 0 ? rc : serialize_CreateRequest(oa, "req", &req);
     enter_critical(zh);
     rc = rc < 0 ? rc : add_string_stat_completion(zh, h.xid, completion, data);
     rc = rc < 0 ? rc : queue_buffer_bytes(&zh->to_send, get_buffer(oa),
@@ -4070,7 +4111,7 @@ int flush_send_queue(zhandle_t*zh, int timeout)
     fd_set pollSet;
     struct timeval wait;
 #endif
-    gettimeofday(&started,0);
+    get_system_time(&started);
     // we can't use dequeue_buffer() here because if (non-blocking) send_buffer()
     // returns EWOULDBLOCK we'd have to put the buffer back on the queue.
     // we use a recursive lock instead and only dequeue the buffer if a send was
@@ -4083,7 +4124,7 @@ int flush_send_queue(zhandle_t*zh, int timeout)
 #endif
             int elapsed;
             struct timeval now;
-            gettimeofday(&now,0);
+            get_system_time(&now);
             elapsed=calculate_interval(&started,&now);
             if (elapsed>timeout) {
                 rc = ZOPERATIONTIMEOUT;
@@ -4122,7 +4163,7 @@ int flush_send_queue(zhandle_t*zh, int timeout)
         // if the buffer has been sent successfully, remove it from the queue
         if (rc > 0)
             remove_buffer(&zh->to_send);
-        gettimeofday(&zh->last_send, 0);
+        get_system_time(&zh->last_send);
         rc = ZOK;
     }
     unlock_buffer_list(&zh->to_send);

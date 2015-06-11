@@ -29,6 +29,7 @@ import org.apache.zookeeper.server.Request;
 import org.apache.zookeeper.server.RequestProcessor;
 import org.apache.zookeeper.server.WorkerService;
 import org.apache.zookeeper.server.ZooKeeperCriticalThread;
+import org.apache.zookeeper.server.ZooKeeperServerListener;
 
 /**
  * This RequestProcessor matches the incoming committed requests with the
@@ -110,8 +111,8 @@ public class CommitProcessor extends ZooKeeperCriticalThread implements
     boolean matchSyncs;
 
     public CommitProcessor(RequestProcessor nextProcessor, String id,
-                           boolean matchSyncs) {
-        super("CommitProcessor:" + id);
+                           boolean matchSyncs, ZooKeeperServerListener listener) {
+        super("CommitProcessor:" + id, listener);
         this.nextProcessor = nextProcessor;
         this.matchSyncs = matchSyncs;
     }
@@ -132,7 +133,9 @@ public class CommitProcessor extends ZooKeeperCriticalThread implements
         switch (request.type) {
             case OpCode.create:
             case OpCode.create2:
+            case OpCode.createContainer:
             case OpCode.delete:
+            case OpCode.deleteContainer:
             case OpCode.setData:
             case OpCode.reconfig:
             case OpCode.multi:
@@ -184,10 +187,8 @@ public class CommitProcessor extends ZooKeeperCriticalThread implements
                  */
                 processCommitted();
             }
-        } catch (InterruptedException e) {
-            LOG.warn("Interrupted exception while waiting", e);
         } catch (Throwable e) {
-            LOG.error("Unexpected exception causing CommitProcessor to exit", e);
+            handleException(this.getName(), e);
         }
         LOG.info("CommitProcessor exited loop!");
     }

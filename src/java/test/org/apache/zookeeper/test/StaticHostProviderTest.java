@@ -25,6 +25,7 @@ import static org.junit.Assert.assertTrue;
 import org.apache.zookeeper.ZKTestCase;
 import org.apache.zookeeper.client.HostProvider;
 import org.apache.zookeeper.client.StaticHostProvider;
+import org.apache.zookeeper.common.Time;
 import org.junit.Test;
 
 import java.net.InetAddress;
@@ -55,9 +56,9 @@ public class StaticHostProviderTest extends ZKTestCase {
             hostProvider.next(0);
             --size;
         }
-        long start = System.currentTimeMillis();
+        long start = Time.currentElapsedTime();
         hostProvider.next(1000);
-        long stop = System.currentTimeMillis();
+        long stop = Time.currentElapsedTime();
         assertTrue(900 <= stop - start);
     }
 
@@ -69,9 +70,9 @@ public class StaticHostProviderTest extends ZKTestCase {
             hostProvider.next(0);
             --size;
         }
-        long start = System.currentTimeMillis();
+        long start = Time.currentElapsedTime();
         hostProvider.next(0);
-        long stop = System.currentTimeMillis();
+        long stop = Time.currentElapsedTime();
         assertTrue(5 > stop - start);
     }
 
@@ -496,7 +497,7 @@ public class StaticHostProviderTest extends ZKTestCase {
             assertTrue(!next.isUnresolved());
             assertTrue(!next.toString().startsWith("/"));
             // Do NOT trigger the reverse name service lookup.
-            String hostname = next.getHostName();
+            String hostname = next.getHostString();
             // In this case, the hostname equals literal IP address.
             hostname.equals(next.getAddress().getHostAddress());
         }

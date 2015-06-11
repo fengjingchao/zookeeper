@@ -40,10 +40,11 @@ import java.util.concurrent.ConcurrentMap;
 
 import org.apache.jute.BinaryOutputArchive;
 import org.apache.zookeeper.ZooDefs.OpCode;
+import org.apache.zookeeper.common.Time;
 import org.apache.zookeeper.server.FinalRequestProcessor;
 import org.apache.zookeeper.server.Request;
 import org.apache.zookeeper.server.RequestProcessor;
-import org.apache.zookeeper.server.ZooKeeperThread;
+import org.apache.zookeeper.server.ZooKeeperCriticalThread;
 import org.apache.zookeeper.server.quorum.QuorumPeer.LearnerType;
 import org.apache.zookeeper.server.quorum.flexible.QuorumVerifier;
 import org.apache.zookeeper.server.util.ZxidUtils;
@@ -347,11 +348,12 @@ public class Leader {
 
     private final Proposal newLeaderProposal = new Proposal();
 
-    class LearnerCnxAcceptor extends ZooKeeperThread {
+    class LearnerCnxAcceptor extends ZooKeeperCriticalThread {
         private volatile boolean stop = false;
 
         public LearnerCnxAcceptor() {
-            super("LearnerCnxAcceptor-" + ss.getLocalSocketAddress());
+            super("LearnerCnxAcceptor-" + ss.getLocalSocketAddress(), zk
+                    .getZooKeeperServerListener());
         }
 
         @Override
@@ -381,7 +383,8 @@ public class Leader {
                     }
                 }
             } catch (Exception e) {
-                LOG.warn("Exception while accepting follower", e);
+                LOG.warn("Exception while accepting follower", e.getMessage());
+                handleException(this.getName(), e);
             }
         }
 
@@ -405,7 +408,7 @@ public class Leader {
      * @throws InterruptedException
      */
     void lead() throws IOException, InterruptedException {
-        self.end_fle = System.currentTimeMillis();
+        self.end_fle = Time.currentElapsedTime();
         LOG.info("LEADING - LEADER ELECTION TOOK - " +
               (self.end_fle - self.start_fle));
         self.start_fle = 0;
@@ -531,7 +534,7 @@ public class Leader {
             }
 
             if (!System.getProperty("zookeeper.leaderServes", "yes").equals("no")) {
-                self.cnxnFactory.setZooKeeperServer(zk);
+                self.setZooKeeperServer(zk);
             }
 
             self.adminServer.setZooKeeperServer(zk);
@@ -549,12 +552,12 @@ public class Leader {
 
             while (true) {
                 synchronized (this) {
-                    long start = System.currentTimeMillis();
+                    long start = Time.currentElapsedTime();
                     long cur = start;
                     long end = start + self.tickTime / 2;
                     while (cur < end) {
                         wait(end - cur);
-                        cur = System.currentTimeMillis();
+                        cur = Time.currentElapsedTime();
                     }
 
                     if (!tickSkip) {
@@ -621,15 +624,14 @@ public class Leader {
         }
 
         // NIO should not accept conenctions
-        self.cnxnFactory.setZooKeeperServer(null);
+        self.setZooKeeperServer(null);
         self.adminServer.setZooKeeperServer(null);
         try {
             ss.close();
         } catch (IOException e) {
             LOG.warn("Ignoring unexpected exception during close",e);
         }
-        // clear all the connections
-        self.cnxnFactory.closeAll();
+        self.closeAllConnections();
         // shutdown the previous zk
         if (zk != null) {
             zk.shutdown();
@@ -1167,12 +1169,12 @@ public class Leader {
                 self.setAcceptedEpoch(epoch);
                 connectingFollowers.notifyAll();
             } else {
-                long start = System.currentTimeMillis();
+                long start = Time.currentElapsedTime();
                 long cur = start;
                 long end = start + self.getInitLimit()*self.getTickTime();
                 while(waitingForNewEpoch && cur < end) {
                     connectingFollowers.wait(end - cur);
-                    cur = System.currentTimeMillis();
+                    cur = Time.currentElapsedTime();
                 }
                 if (waitingForNewEpoch) {
                     throw new InterruptedException("Timeout while waiting for epoch from quorum");
@@ -1204,12 +1206,12 @@ public class Leader {
                 electionFinished = true;
                 electingFollowers.notifyAll();
             } else {
-                long start = System.currentTimeMillis();
+                long start = Time.currentElapsedTime();
                 long cur = start;
                 long end = start + self.getInitLimit()*self.getTickTime();
                 while(!electionFinished && cur < end) {
                     electingFollowers.wait(end - cur);
-                    cur = System.currentTimeMillis();
+                    cur = Time.currentElapsedTime();
                 }
                 if (!electionFinished) {
                     throw new InterruptedException("Timeout while waiting for epoch to be acked by quorum");
@@ -1310,12 +1312,12 @@ public class Leader {
                 quorumFormed = true;
                 newLeaderProposal.qvAcksetPairs.notifyAll();
             } else {
-                long start = System.currentTimeMillis();
+                long start = Time.currentElapsedTime();
                 long cur = start;
                 long end = start + self.getInitLimit() * self.getTickTime();
                 while (!quorumFormed && cur < end) {
                     newLeaderProposal.qvAcksetPairs.wait(end - cur);
-                    cur = System.currentTimeMillis();
+                    cur = Time.currentElapsedTime();
                 }
                 if (!quorumFormed) {
                     throw new InterruptedException(
