@@ -37,7 +37,6 @@ import org.apache.zookeeper.server.util.OSMXBean;
 import org.junit.Assert;
 import org.junit.Test;
 
-
 public class QuorumBase extends ClientBase {
     private static final Logger LOG = LoggerFactory.getLogger(QuorumBase.class);
 
@@ -54,6 +53,17 @@ public class QuorumBase extends ClientBase {
     protected int portLE3;
     protected int portLE4;
     protected int portLE5;
+
+    // If testing invalid cases, startServers will throw exception indicating that startup failed.
+    boolean isInvalidCaseTest;
+
+    public QuorumBase() {
+        this(false);
+    }
+
+    public QuorumBase(boolean isInvalidCaseTest) {
+        this.isInvalidCaseTest = isInvalidCaseTest;
+    }
 
     @Test
     // This just avoids complaints by junit
@@ -185,9 +195,15 @@ public class QuorumBase extends ClientBase {
 
         LOG.info ("Checking ports " + hostPort);
         for (String hp : hostPort.split(",")) {
-            Assert.assertTrue("waiting for server up",
-                       ClientBase.waitForServerUp(hp,
-                                    CONNECTION_TIMEOUT));
+            if (!isInvalidCaseTest) {
+                Assert.assertTrue("waiting for server up",
+                        ClientBase.waitForServerUp(hp,
+                                CONNECTION_TIMEOUT));
+            } else {
+                if (!ClientBase.waitForServerUp(hp, CONNECTION_TIMEOUT)){
+                    throw new QuorumBaseException("Server won't start up");
+                }
+            }
             LOG.info(hp + " is accepting client connections");
         }
 

@@ -82,6 +82,14 @@ public abstract class ClientBase extends ZKTestCase {
         super();
     }
 
+    public String getHostPort() {
+        return hostPort;
+    }
+
+    public void setHostPort(String hostPort) {
+        this.hostPort = hostPort;
+    }
+
     /**
      * In general don't use this. Only use in the special case that you
      * want to ignore results (for whatever reason) in your test. Don't
@@ -407,7 +415,7 @@ public abstract class ClientBase extends ZKTestCase {
         FileTxnLog.setPreallocSize(100 * 1024);
     }
 
-    protected void setUpAll() throws Exception {
+    public void setUpAll() throws Exception {
         allClients = new LinkedList<ZooKeeper>();
         allClientsSetup = true;
     }
@@ -501,7 +509,7 @@ public abstract class ClientBase extends ZKTestCase {
         return zs;
     }
 
-    protected void tearDownAll() throws Exception {
+    public void tearDownAll() throws Exception {
         synchronized (this) {
             if (allClients != null) for (ZooKeeper zk : allClients) {
                 try {

@@ -39,6 +39,9 @@ import org.apache.jute.BinaryOutputArchive;
 import org.apache.jute.InputArchive;
 import org.apache.jute.OutputArchive;
 import org.apache.jute.Record;
+import org.apache.zookeeper.server.quorum.auth.AuthException;
+import org.apache.zookeeper.server.quorum.auth.QuorumAuth;
+import org.apache.zookeeper.server.quorum.auth.QuorumAuthClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.zookeeper.server.Request;
@@ -216,8 +219,8 @@ public class Learner {
      * @throws ConnectException
      * @throws InterruptedException
      */
-    protected void connectToLeader(InetSocketAddress addr) 
-    throws IOException, ConnectException, InterruptedException {
+    protected void connectToLeader(InetSocketAddress addr)
+            throws IOException, InterruptedException, AuthException {
         sock = new Socket();        
         sock.setSoTimeout(self.tickTime * self.initLimit);
         for (int tries = 0; tries < 5; tries++) {
@@ -237,6 +240,10 @@ public class Learner {
                 }
             }
             Thread.sleep(1000);
+        }
+        if (QuorumAuth.isEnabled()) {
+            final QuorumAuthClient authClient = new QuorumAuthClient(sock);
+            authClient.authenticate();
         }
         leaderIs = BinaryInputArchive.getArchive(new BufferedInputStream(
                 sock.getInputStream()));

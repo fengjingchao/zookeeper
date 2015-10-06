@@ -29,17 +29,17 @@ import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.nio.channels.UnresolvedAddressException;
 import java.util.Enumeration;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.Date;
 
+import org.apache.zookeeper.server.quorum.auth.AuthException;
+import org.apache.zookeeper.server.quorum.auth.QuorumAuth;
+import org.apache.zookeeper.server.quorum.auth.QuorumAuthClient;
+import org.apache.zookeeper.server.quorum.auth.QuorumAuthServer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.zookeeper.server.ZooKeeperServer;
 import org.apache.zookeeper.server.ZooKeeperThread;
 
 /**
@@ -118,6 +118,8 @@ public class QuorumCnxManager {
      */
     private final Object recvQLock = new Object();
 
+    ExecutorService authExecutors = Executors.newCachedThreadPool();
+
     /*
      * Shutdown flag
      */
@@ -181,7 +183,29 @@ public class QuorumCnxManager {
      * If this server has initiated the connection, then it gives up on the
      * connection if it loses challenge. Otherwise, it keeps the connection.
      */
-    public boolean initiateConnection(Socket sock, Long sid) {
+    public void initiateConnection(final Socket sock, final Long sid) {
+        if (QuorumAuth.isEnabled()) {
+            final QuorumAuthClient authClient = new QuorumAuthClient(sock);
+            authExecutors.submit(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        authClient.authenticate();
+                    } catch (AuthException e) {
+                        LOG.error("Client failed to authenticate to server, id: {}, addr: {}", sid, sock.getRemoteSocketAddress());
+                        LOG.error("Exception:", e);
+                        closeSocket(sock);
+                        return;
+                    }
+                    startConnection(sock, sid);
+                }
+            });
+            return;
+        }
+        startConnection(sock, sid);
+    }
+
+    private void startConnection(Socket sock, Long sid) {
         DataOutputStream dout = null;
         try {
             // Sending id and challenge
@@ -191,9 +215,8 @@ public class QuorumCnxManager {
         } catch (IOException e) {
             LOG.warn("Ignoring exception reading or writing challenge: ", e);
             closeSocket(sock);
-            return false;
         }
-        
+
         // If lost the challenge, then drop the new connection
         if (sid > self.getId()) {
             LOG.info("Have smaller server identifier, so dropping the " +
@@ -206,27 +229,22 @@ public class QuorumCnxManager {
             sw.setRecv(rw);
 
             SendWorker vsw = senderWorkerMap.get(sid);
-            
+
             if(vsw != null)
                 vsw.finish();
-            
+
             senderWorkerMap.put(sid, sw);
             if (!queueSendMap.containsKey(sid)) {
                 queueSendMap.put(sid, new ArrayBlockingQueue<ByteBuffer>(
                         SEND_CAPACITY));
             }
-            
+
             sw.start();
             rw.start();
-            
-            return true;    
-            
         }
-        return false;
     }
 
-    
-    
+
     /**
      * If this server receives a connection request, then it gives up on the new
      * connection if it wins. Notice that it checks whether it has a connection
@@ -234,9 +252,31 @@ public class QuorumCnxManager {
      * possible long value to lose the challenge.
      * 
      */
-    public void receiveConnection(Socket sock) {
+    public void receiveConnection(final Socket sock) {
+        if (QuorumAuth.isEnabled()) {
+            final QuorumAuthServer authServer = new QuorumAuthServer(sock);
+            authExecutors.submit(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        authServer.authenticate();
+                    } catch (AuthException e) {
+                        LOG.error("Server failed to authenticate client, addr: {}", sock.getRemoteSocketAddress());
+                        LOG.error("Exception:", e);
+                        closeSocket(sock);
+                        return;
+                    }
+                    handleConnection(sock);
+                }
+            });
+            return;
+        }
+        handleConnection(sock);
+    }
+
+    private void handleConnection(Socket sock) {
         Long sid = null;
-        
+
         try {
             // Read server id
             DataInputStream din = new DataInputStream(sock.getInputStream());
@@ -265,7 +305,7 @@ public class QuorumCnxManager {
                  * Choose identifier at random. We need a value to identify
                  * the connection.
                  */
-                
+
                 sid = observerCounter--;
                 LOG.info("Setting arbitrary identifier to observer: " + sid);
             }
@@ -274,7 +314,7 @@ public class QuorumCnxManager {
             LOG.warn("Exception reading or writing challenge: " + e.toString());
             return;
         }
-        
+
         //If wins the challenge, then close the new connection.
         if (sid < self.getId()) {
             /*
@@ -301,20 +341,20 @@ public class QuorumCnxManager {
             sw.setRecv(rw);
 
             SendWorker vsw = senderWorkerMap.get(sid);
-            
+
             if(vsw != null)
                 vsw.finish();
-            
+
             senderWorkerMap.put(sid, sw);
-            
+
             if (!queueSendMap.containsKey(sid)) {
                 queueSendMap.put(sid, new ArrayBlockingQueue<ByteBuffer>(
                         SEND_CAPACITY));
             }
-            
+
             sw.start();
             rw.start();
-            
+
             return;
         }
     }
